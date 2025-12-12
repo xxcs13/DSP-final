@@ -198,9 +198,6 @@ The implementation follows a modular architecture with six primary components. T
 
 The implementation enforces strict separation between training and validation data throughout all preprocessing and feature engineering stages. Imputation values, encoding mappings, scaling parameters, and feature engineering statistics are computed exclusively from training data. These learned parameters are stored and applied to transform validation and test data, ensuring no information from held-out data influences the modeling process.
 
-### 3.3 Reproducibility
-
-All stochastic processes use fixed random seeds (random_state=55 for model training, random_state=42 for data splitting) to ensure reproducible results. Configuration parameters are logged and stored in JSON format for experimental tracking. Model artifacts, including trained models, optimal thresholds, and hyperparameters, are persisted to disk for subsequent analysis and deployment.
 
 ---
 
@@ -248,6 +245,3 @@ Hyperparameter optimization is enabled via the --optimize flag with configurable
 
 ---
 
-## 7. Acknowledgments
-
-This research utilizes open-source machine learning libraries including scikit-learn, XGBoost, LightGBM, CatBoost, and SHAP. The Optuna framework provides hyperparameter optimization capabilities. The implementation benefits from the broader machine learning and data science community's contributions to reproducible research practices.
