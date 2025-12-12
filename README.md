@@ -63,45 +63,12 @@ conda create -n alex python=3.10
 conda activate alex
 ```
 
-Using venv:
-
-```bash
-python -m venv venv
-source venv/bin/activate  # On Windows: venv\Scripts\activate
-```
 
 ### Step 3: Install Dependencies
 
 ```bash
 pip install -r requirements.txt
 ```
-
-### Required Dependencies
-
-The system requires the following packages (automatically installed via requirements.txt):
-
-**Core Libraries:**
-- pandas >= 2.0.0
-- numpy >= 1.24.0
-- scikit-learn >= 1.3.0
-
-**Machine Learning:**
-- xgboost >= 2.0.0
-- lightgbm >= 4.0.0
-- catboost >= 1.2.0
-- optuna >= 3.3.0
-
-**Data Processing:**
-- imbalanced-learn >= 0.11.0
-
-**Visualization & Interpretability:**
-- matplotlib >= 3.7.0
-- seaborn >= 0.12.0
-- shap >= 0.43.0
-
-**Utilities:**
-- joblib >= 1.3.0
-- tqdm >= 4.65.0
 
 ## Quick Start
 
@@ -864,103 +831,6 @@ config = {
 - `training_summary.csv`: Training statistics
 - Individual model training history files
 
-## Performance Metrics
-
-### Validation Set Results
-
-Based on default configuration without hyperparameter optimization:
-
-**CatBoost (Best Single Model):**
-- Accuracy: 94.41%
-- Precision: 96.00%
-- Recall: 73.12%
-- F1-Score: 83.20%
-- AUC-ROC: 97.75%
-
-**LightGBM:**
-- Accuracy: 94.35%
-- Precision: 95.28%
-- Recall: 72.89%
-- F1-Score: 82.73%
-- AUC-ROC: 97.72%
-
-**XGBoost:**
-- Accuracy: 94.38%
-- Precision: 95.67%
-- Recall: 72.67%
-- F1-Score: 82.64%
-- AUC-ROC: 97.71%
-
-**Random Forest:**
-- Accuracy: 94.18%
-- Precision: 94.43%
-- Recall: 72.15%
-- F1-Score: 81.80%
-- AUC-ROC: 97.46%
-
-**Logistic Regression (Baseline):**
-- Accuracy: 94.30%
-- Precision: 93.89%
-- Recall: 73.98%
-- F1-Score: 82.71%
-- AUC-ROC: 97.58%
-
-**Ensemble (Recommended):**
-- Accuracy: ~94.50%
-- Improved robustness over individual models
-- Reduced variance in predictions
-
-### With Hyperparameter Optimization
-
-Expected improvements with `--optimize --trials 100`:
-- Accuracy: +0.5-1.0%
-- F1-Score: +1.0-2.0%
-- AUC-ROC: +0.2-0.5%
-
-### Optimization Impact
-
-**Learning Rate Optimization:**
-- Execution time: +5-10 minutes
-- Performance gain: 0.1-0.5% accuracy improvement
-- Ensures optimal convergence speed
-
-**Threshold Optimization:**
-- Execution time: +1-2 minutes
-- Performance gain: 0.5-0.7% accuracy improvement
-- Optimizes decision boundary
-
-## Technical Implementation
-
-### Data Leakage Prevention
-
-**Critical Safeguards:**
-
-1. **Preprocessing Phase:**
-   - Imputation values computed from training set only
-   - Scaling parameters computed from training set only
-   - SMOTE applied to training set only after split
-   - Validation and test sets never influence preprocessing
-
-2. **Feature Engineering Phase:**
-   - Feature statistics computed from training set only
-   - Training statistics stored and reused for validation/test
-   - `is_training` flag enforces separation
-
-3. **Validation Strategy:**
-   - Stratified splitting preserves class distribution
-   - Validation set used only for evaluation, not training
-   - Test set completely isolated until final prediction
-
-### Reproducibility
-
-**Random State Management:**
-- Fixed random state: 42
-- Applied consistently across:
-  - Train-validation split
-  - SMOTE oversampling
-  - Model training
-  - Cross-validation folds
-  - Hyperparameter optimization
 
 ### GPU Acceleration
 
@@ -988,24 +858,6 @@ Expected improvements with `--optimize --trials 100`:
 - Try-except blocks for optional GPU features
 - Graceful degradation if components unavailable
 - Comprehensive error messages
-
-## Validation and Testing
-
-### Submission File Validation
-
-Validate generated predictions:
-
-```bash
-python validate_submission.py submission_ensemble.csv
-```
-
-**Checks:**
-- Correct number of rows (93,800)
-- Required columns (id, Depression)
-- Valid prediction values (0 or 1)
-- No missing values
-- Unique IDs matching test set
-
 
 
 ## License
