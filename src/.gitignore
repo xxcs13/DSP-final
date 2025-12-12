@@ -1,0 +1,10 @@
+__pycache__/
+eda_outputs/
+engineered_data/
+processed_data/
+training_history/
+training_curves/
+trained_models/
+evaluation_results/
+interpretability_results/
+*.csv
