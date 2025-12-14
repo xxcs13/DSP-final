@@ -966,10 +966,26 @@ class DataPreprocessor:
         print(f"  Train target distribution: {np.bincount(y_train)}")
         print(f"  Val target distribution: {np.bincount(y_val)}")
         
-        # Step 4: Encode categorical features (fit on training only)
+        # Step 4: Handle missing values FIRST - COMPUTE ON TRAINING SET ONLY
+        # Imputation MUST come before encoding because:
+        # 1. Some encodings (e.g., target encoding) need complete data
+        # 2. Missing value statistics should be computed from training data only
+        print("\n" + "=" * 80)
+        print("STEP 4: Handling missing values (fit on TRAINING only)")
+        print("=" * 80)
+        print("  Computing imputation statistics from TRAINING SET ONLY...")
+        train_df = self.handle_missing_values(train_df, is_training=True)
+        print(f"  Training missing values after imputation: {train_df.isnull().sum().sum()}")
+        
+        print("  Applying training statistics to VALIDATION SET...")
+        val_df = self.handle_missing_values(val_df, is_training=False, 
+                                             imputation_values=self.imputation_values)
+        print(f"  Validation missing values after imputation: {val_df.isnull().sum().sum()}")
+        
+        # Step 5: Encode categorical features (fit on training only)
         # Target encoding uses only training data's target values
         print("\n" + "=" * 80)
-        print("STEP 4: Encoding categorical features (fit on TRAINING only)")
+        print("STEP 5: Encoding categorical features (fit on TRAINING only)")
         print("=" * 80)
         print("  Fitting encoders on TRAINING SET ONLY...")
         train_df = self.encode_categorical_features(train_df, fit=True, target_col='Depression')
@@ -979,9 +995,9 @@ class DataPreprocessor:
         val_df = self.encode_categorical_features(val_df, fit=False, target_col='Depression')
         print(f"  Validation encoded. Shape: {val_df.shape}")
         
-        # Step 5: Prepare features
+        # Step 6: Prepare features
         print("\n" + "=" * 80)
-        print("STEP 5: Preparing features")
+        print("STEP 6: Preparing features")
         print("=" * 80)
         X_train, _ = self.prepare_features(train_df, target_col='Depression')
         
@@ -1000,9 +1016,9 @@ class DataPreprocessor:
         X_train_df = pd.DataFrame(X_train, columns=self.feature_names)
         X_val_df = pd.DataFrame(X_val, columns=self.feature_names)
         
-        # Step 6: Handle outliers - FIT ON TRAINING SET ONLY
+        # Step 7: Handle outliers - FIT ON TRAINING SET ONLY
         print("\n" + "=" * 80)
-        print("STEP 6: Handling outliers (IQR clipping)")
+        print("STEP 7: Handling outliers (IQR clipping)")
         print("=" * 80)
         print("  Computing clipping bounds from TRAINING SET ONLY...")
         X_train_df = self.handle_outliers(X_train_df, is_training=True)
@@ -1010,18 +1026,6 @@ class DataPreprocessor:
         print("  Applying training bounds to VALIDATION SET...")
         X_val_df = self.handle_outliers(X_val_df, is_training=False, 
                                         clip_values=self.clip_values)
-        
-        # Step 7: Handle missing values - COMPUTE ON TRAINING SET ONLY
-        print("\n" + "=" * 80)
-        print("STEP 7: Handling missing values (median/mode imputation)")
-        print("=" * 80)
-        X_train_df = self.handle_missing_values(X_train_df, is_training=True)
-        print(f"  Training missing values after imputation: {X_train_df.isnull().sum().sum()}")
-        
-        print("  Applying training statistics to VALIDATION SET...")
-        X_val_df = self.handle_missing_values(X_val_df, is_training=False, 
-                                               imputation_values=self.imputation_values)
-        print(f"  Validation missing values after imputation: {X_val_df.isnull().sum().sum()}")
         
         
         print("\n" + "=" * 80)
@@ -1034,10 +1038,10 @@ class DataPreprocessor:
         print("=" * 80)
         print("  ✓ Only extremely corrupted rows removed (>= 50% missing)")
         print("  ✓ Conservative data cleaning (exact match only)")
-        print("  ✓ Train/val split done BEFORE encoding (target leakage prevented)")
-        print("  ✓ Target encoding fitted on training set only")
-        print("  ✓ Outlier clipping bounds fitted on training set only")
+        print("  ✓ Train/val split done BEFORE any transformations")
         print("  ✓ Imputation statistics computed on training set only")
+        print("  ✓ Target encoding fitted on training set only (after imputation)")
+        print("  ✓ Outlier clipping bounds fitted on training set only")
   
         print("=" * 80)
         
@@ -1096,35 +1100,36 @@ class DataPreprocessor:
         print("=" * 80)
         df = self.clean_data_quality_issues(df)
         
-        # Step 2: Encode categorical features (using training encoders)
+        # Step 2: Handle missing values FIRST (using TRAINING statistics)
+        # Imputation must come before encoding to maintain consistency with training
         print("\n" + "=" * 80)
-        print("STEP 2: Encoding categorical features (using training encoders)")
+        print("STEP 2: Handling missing values (using training statistics)")
+        print("=" * 80)
+        df = self.handle_missing_values(df, is_training=False, 
+                                        imputation_values=self.imputation_values)
+        print(f"  Test missing values after imputation: {df.isnull().sum().sum()}")
+        
+        # Step 3: Encode categorical features (using training encoders)
+        print("\n" + "=" * 80)
+        print("STEP 3: Encoding categorical features (using training encoders)")
         print("=" * 80)
         df = self.encode_categorical_features(df, fit=False)
         print(f"  Encoded features. Shape: {df.shape}")
         
-        # Step 3: Prepare features
+        # Step 4: Prepare features
         print("\n" + "=" * 80)
-        print("STEP 3: Preparing features")
+        print("STEP 4: Preparing features")
         print("=" * 80)
         X, _ = self.prepare_features(df, target_col='Depression')
         print(f"  Feature matrix shape: {X.shape}")
         
-        # Step 4: Handle outliers (using TRAINING clipping bounds)
+        # Step 5: Handle outliers (using TRAINING clipping bounds)
         print("\n" + "=" * 80)
-        print("STEP 4: Handling outliers (using training bounds)")
+        print("STEP 5: Handling outliers (using training bounds)")
         print("=" * 80)
         X_df = pd.DataFrame(X, columns=self.feature_names)
         X_df = self.handle_outliers(X_df, is_training=False, 
                                     clip_values=self.clip_values)
-        
-        # Step 5: Handle missing values (using TRAINING statistics)
-        print("\n" + "=" * 80)
-        print("STEP 5: Handling missing values (using training statistics)")
-        print("=" * 80)
-        X_df = self.handle_missing_values(X_df, is_training=False, 
-                                          imputation_values=self.imputation_values)
-        print(f"  Test missing values after imputation: {X_df.isnull().sum().sum()}")
         
         # NOTE: Scaling is NOT applied here - it will be done after feature engineering
         
@@ -1136,9 +1141,9 @@ class DataPreprocessor:
         print("DATA LEAKAGE PREVENTION VERIFIED (Phase 1):")
         print("=" * 80)
         print("  ✓ Conservative data cleaning (exact match only)")
+        print("  ✓ Using training set imputation statistics (applied first)")
         print("  ✓ Using training set category encoders")
         print("  ✓ Using training set outlier clipping bounds")
-        print("  ✓ Using training set imputation statistics")
         print("=" * 80)
         
         return X_df.values, test_ids
