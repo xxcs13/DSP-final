@@ -7,8 +7,72 @@ to maximize specified metrics (F1-score, Accuracy, etc.)
 
 import numpy as np
 from sklearn.metrics import accuracy_score, f1_score, precision_score, recall_score, roc_auc_score
+from sklearn.linear_model import LogisticRegression
+from sklearn.ensemble import RandomForestClassifier
 import warnings
 warnings.filterwarnings('ignore')
+
+
+def _handle_nan_for_prediction(X, model):
+    """
+    Handle NaN values for models that do not support NaN natively
+    
+    Tree-based models (XGBoost, LightGBM, CatBoost) handle NaN natively.
+    Other models (LogisticRegression, RandomForest) need NaN to be imputed.
+    
+    Args:
+        X: Feature matrix (may contain NaN)
+        model: Model instance to check type
+        
+    Returns:
+        X with NaN imputed if necessary
+    """
+    # Try to import tree model types
+    try:
+        from xgboost import XGBClassifier
+    except ImportError:
+        XGBClassifier = type(None)
+    try:
+        from lightgbm import LGBMClassifier
+    except ImportError:
+        LGBMClassifier = type(None)
+    try:
+        from catboost import CatBoostClassifier
+    except ImportError:
+        CatBoostClassifier = type(None)
+    
+    # Check if model supports NaN natively
+    nan_native_models = (XGBClassifier, LGBMClassifier, CatBoostClassifier)
+    
+    if isinstance(model, nan_native_models):
+        # Tree-based models handle NaN natively - return as-is
+        return X
+    
+    # For other models, check if there are NaN values
+    X_arr = np.asarray(X)
+    nan_mask = np.isnan(X_arr)
+    
+    if not nan_mask.any():
+        return X
+    
+    # Impute NaN with column median
+    X_copy = X_arr.copy()
+    impute_values = np.nanmedian(X_copy, axis=0)
+    # Handle columns where all values are NaN - use 0 as fallback
+    impute_values = np.where(np.isnan(impute_values), 0.0, impute_values)
+    
+    nan_count = nan_mask.sum()
+    print(f"  Note: Imputing {nan_count} NaN values for threshold optimization")
+    
+    for col_idx in range(X_copy.shape[1]):
+        col_nan_mask = nan_mask[:, col_idx]
+        if col_nan_mask.any():
+            X_copy[col_nan_mask, col_idx] = impute_values[col_idx]
+    
+    # Final fallback for any remaining NaN
+    X_copy = np.nan_to_num(X_copy, nan=0.0)
+    
+    return X_copy
 
 
 class ThresholdOptimizer:
@@ -156,8 +220,11 @@ def optimize_model_threshold(model, X_val, y_val, metric='accuracy', verbose=Tru
     Returns:
         Optimal threshold and optimizer object
     """
+    # Handle NaN values for models that don't support them natively
+    X_val_processed = _handle_nan_for_prediction(X_val, model)
+    
     # Get probability predictions
-    y_pred_proba = model.predict_proba(X_val)[:, 1]
+    y_pred_proba = model.predict_proba(X_val_processed)[:, 1]
     
     # Initialize optimizer
     optimizer = ThresholdOptimizer(metric=metric)

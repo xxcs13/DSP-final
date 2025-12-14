@@ -20,6 +20,46 @@ import warnings
 warnings.filterwarnings('ignore')
 
 
+def _impute_nan_for_shap(X, feature_names=None):
+    """
+    Impute NaN values for SHAP computation
+    
+    SHAP's KernelExplainer and kmeans clustering do not handle NaN values.
+    This function imputes NaN with column medians.
+    
+    Args:
+        X: Feature matrix (may contain NaN)
+        feature_names: List of feature names (optional)
+        
+    Returns:
+        X with NaN imputed
+    """
+    X_arr = np.asarray(X, dtype=np.float64)
+    nan_mask = np.isnan(X_arr)
+    
+    if not nan_mask.any():
+        return X_arr
+    
+    nan_count = nan_mask.sum()
+    print(f"  Note: Imputing {nan_count} NaN values for SHAP computation")
+    
+    # Compute column medians, handling all-NaN columns
+    impute_values = np.nanmedian(X_arr, axis=0)
+    impute_values = np.where(np.isnan(impute_values), 0.0, impute_values)
+    
+    # Impute NaN values
+    X_copy = X_arr.copy()
+    for col_idx in range(X_copy.shape[1]):
+        col_nan_mask = nan_mask[:, col_idx]
+        if col_nan_mask.any():
+            X_copy[col_nan_mask, col_idx] = impute_values[col_idx]
+    
+    # Final fallback
+    X_copy = np.nan_to_num(X_copy, nan=0.0)
+    
+    return X_copy
+
+
 class ModelInterpreter:
     def __init__(self, model, X_data, feature_names, output_dir='interpretability_results'):
         """
@@ -48,12 +88,15 @@ class ModelInterpreter:
         """
         print(f"Computing SHAP values (using {max_samples} samples)...")
         
+        # Impute NaN values for SHAP computation
+        X_data_clean = _impute_nan_for_shap(self.X_data, self.feature_names)
+        
         # Sample data if too large
-        if len(self.X_data) > max_samples:
-            sample_indices = np.random.choice(len(self.X_data), max_samples, replace=False)
-            X_sample = self.X_data[sample_indices]
+        if len(X_data_clean) > max_samples:
+            sample_indices = np.random.choice(len(X_data_clean), max_samples, replace=False)
+            X_sample = X_data_clean[sample_indices]
         else:
-            X_sample = self.X_data
+            X_sample = X_data_clean
         
         # Create SHAP explainer
         try:
@@ -64,7 +107,7 @@ class ModelInterpreter:
         except:
             # Fall back to KernelExplainer for other models
             print("TreeExplainer not available, using KernelExplainer (slower)...")
-            background = shap.kmeans(self.X_data, 50)
+            background = shap.kmeans(X_data_clean, 50)
             self.explainer = shap.KernelExplainer(self.model.predict_proba, background)
             self.shap_values = self.explainer.shap_values(X_sample)
         

@@ -51,7 +51,7 @@ class DepressionPredictionPipeline:
             'smote_method': 'smote',
             'val_size': 0.2,
             'scaling_method': 'robust',
-            'encoding_method': 'target',  # 'target' or 'label' for Profession encoding
+            'encoding_method': 'label',  # 'label' or 'target' for Profession encoding
             'use_feature_selection': False,
             'n_selected_features': 20,
             'optimize_hyperparams': False,
@@ -343,8 +343,8 @@ def main():
     parser.add_argument('--test-path', default='data/test.csv', help='Path to test data')
     parser.add_argument('--no-smote', action='store_true', help='Disable SMOTE')
     parser.add_argument('--no-scaling', action='store_true', help='Disable feature scaling')
-    parser.add_argument('--encoding-method', type=str, default='target', choices=['target', 'label'],
-                        help='Encoding method for Profession feature: target or label (default: target)')
+    parser.add_argument('--encoding-method', type=str, default='label', choices=['target', 'label'],
+                        help='Encoding method for Profession feature: label or target (default: label)')
     parser.add_argument('--val-size', type=float, default=0.2, help='Validation set size')
     parser.add_argument('--optimize', action='store_true', help='Enable hyperparameter optimization')
     parser.add_argument('--optimize-lr', action='store_true', help='Enable learning rate optimization')

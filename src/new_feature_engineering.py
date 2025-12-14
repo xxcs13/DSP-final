@@ -38,6 +38,11 @@ class FeatureEngineer:
         
         IMPROVED: Added stress saturation features (non-linear)
         
+        NOTE: This handles structural NaN values properly. Students have NaN for
+        Work Pressure (they don't work), and Professionals have NaN for Academic
+        Pressure (they don't study). We use nanmean/nanmax to compute aggregates
+        only from available stress components.
+        
         Args:
             df: Input dataframe with features
             
@@ -46,28 +51,32 @@ class FeatureEngineer:
         """
         df = df.copy()
         
-        # Total stress index: combination of all stress factors
-        stress_components = []
-        
+        # Collect stress component column names that exist
+        stress_col_names = []
         if 'Academic Pressure' in df.columns:
-            stress_components.append(df['Academic Pressure'])
+            stress_col_names.append('Academic Pressure')
         if 'Work Pressure' in df.columns:
-            stress_components.append(df['Work Pressure'])
+            stress_col_names.append('Work Pressure')
         if 'Financial Stress' in df.columns:
-            stress_components.append(df['Financial Stress'])
+            stress_col_names.append('Financial Stress')
         
-        if len(stress_components) > 0:
-            # Average stress level
-            df['Total_Stress_Index'] = sum(stress_components) / len(stress_components)
+        if len(stress_col_names) > 0:
+            # Create stress array for vectorized NaN-aware operations
+            stress_array = df[stress_col_names].values  # Shape: (n_samples, n_stress_components)
             
-            # Maximum stress (highest stress factor)
-            df['Max_Stress'] = np.maximum.reduce(stress_components)
+            # Average stress level (NaN-aware: ignores NaN values)
+            # For students: averages Academic Pressure and Financial Stress
+            # For professionals: averages Work Pressure and Financial Stress
+            df['Total_Stress_Index'] = np.nanmean(stress_array, axis=1)
             
-            # Stress variance (consistency of stress across domains)
-            stress_array = np.column_stack(stress_components)
-            df['Stress_Variance'] = np.var(stress_array, axis=1)
+            # Maximum stress (highest available stress factor)
+            df['Max_Stress'] = np.nanmax(stress_array, axis=1)
             
-            # NEW: Stress saturation - diminishing marginal effect at high stress
+            # Stress variance (consistency across available stress domains)
+            # Use ddof=0 for population variance (avoid NaN when only 1 component available)
+            df['Stress_Variance'] = np.nanvar(stress_array, axis=1, ddof=0)
+            
+            # Stress saturation - diminishing marginal effect at high stress
             # log1p creates a sub-linear relationship (stress 5 is not 5x worse than stress 1)
             df['Stress_Saturated'] = np.log1p(df['Total_Stress_Index'])
         
@@ -131,6 +140,11 @@ class FeatureEngineer:
         IMPROVED: Removed Satisfaction_Stress_Ratio (tree models can learn this)
         Added meaningful binary indicator instead
         
+        NOTE: This handles structural NaN values properly. Students have NaN for
+        Job Satisfaction (they don't work), and Professionals have NaN for Study
+        Satisfaction (they don't study). We use nanmean to compute averages only
+        from available satisfaction components.
+        
         Args:
             df: Input dataframe
             is_training: Whether this is training data (compute statistics)
@@ -140,42 +154,48 @@ class FeatureEngineer:
         """
         df = df.copy()
         
-        # Overall satisfaction: average of study and job satisfaction
-        satisfaction_components = []
-        
+        # Collect satisfaction component column names that exist
+        satisfaction_col_names = []
         if 'Study Satisfaction' in df.columns:
-            satisfaction_components.append(df['Study Satisfaction'])
+            satisfaction_col_names.append('Study Satisfaction')
         if 'Job Satisfaction' in df.columns:
-            satisfaction_components.append(df['Job Satisfaction'])
+            satisfaction_col_names.append('Job Satisfaction')
         
-        if len(satisfaction_components) > 0:
-            df['Overall_Satisfaction'] = sum(satisfaction_components) / len(satisfaction_components)
+        if len(satisfaction_col_names) > 0:
+            # Create satisfaction array for vectorized NaN-aware operations
+            satisfaction_array = df[satisfaction_col_names].values
             
-            # NEW: Binary indicator for critically low satisfaction + high stress
+            # Overall satisfaction (NaN-aware: ignores NaN values)
+            # For students: uses Study Satisfaction only
+            # For professionals: uses Job Satisfaction only
+            df['Overall_Satisfaction'] = np.nanmean(satisfaction_array, axis=1)
+            
+            # Binary indicator for critically low satisfaction + high stress
             # This is a meaningful interaction that models might not easily discover
             if 'Total_Stress_Index' in df.columns:
+                # Handle NaN in Overall_Satisfaction for this comparison
+                low_sat = df['Overall_Satisfaction'] < 2.0
+                high_stress = df['Total_Stress_Index'] > 3.0
+                # Both conditions must be True (and not NaN)
                 df['Low_Satisfaction_High_Stress'] = (
-                    (df['Overall_Satisfaction'] < 2.0) & 
-                    (df['Total_Stress_Index'] > 3.0)
+                    low_sat.fillna(False) & high_stress.fillna(False)
                 ).astype(int)
         
-        # ❌ REMOVED: Satisfaction_Stress_Ratio = (satisfaction + 1) / (stress + 1)
-        # Why removed:
-        # 1. This is a simple division that tree models can learn automatically
-        # 2. It's a linear combination of two features
-        # 3. Adding +1 to both is arbitrary and may distort the relationship
-        
         # Achievement indicator: CGPA above median (use training median to prevent leakage)
+        # Note: CGPA is NaN for professionals (structural missing)
         if 'CGPA' in df.columns:
             if is_training:
-                # Training: Compute and store median
-                median_cgpa = df['CGPA'].median()
+                # Training: Compute and store median (ignoring NaN)
+                median_cgpa = df['CGPA'].median()  # pandas median ignores NaN by default
                 self.training_statistics['median_cgpa'] = median_cgpa
             else:
                 # Validation/Test: Use training median
                 median_cgpa = self.training_statistics.get('median_cgpa', df['CGPA'].median())
             
-            df['High_Achiever'] = (df['CGPA'] >= median_cgpa).astype(int)
+            # High_Achiever: True if CGPA >= median, keep NaN for professionals
+            # For professionals (NaN CGPA), this will be NaN which gets filled later
+            df['High_Achiever'] = (df['CGPA'] >= median_cgpa).astype(float)
+            # NaN CGPA results in NaN High_Achiever - professionals don't have this indicator
         
         return df
         
@@ -437,24 +457,62 @@ class FeatureEngineer:
         """
         Apply SMOTE to handle class imbalance (training data only)
         
+        Handles NaN values by temporarily replacing them with a sentinel value,
+        applying SMOTE, then restoring NaN values. This is necessary because:
+        1. Structural NaN values are preserved for tree-based models to learn
+        2. SMOTE does not accept NaN values natively
+        3. After SMOTE, NaN values are restored so tree models can handle them
+        
         Args:
-            X: Feature matrix
+            X: Feature matrix (may contain NaN for structural missing values)
             y: Target vector
             method: 'smote' or 'smotetomek'
             
         Returns:
-            Resampled X and y
+            Resampled X and y (with NaN values preserved/propagated)
         """
         print(f"  Original class distribution: {np.bincount(y.astype(int))}")
         
+        # Check for NaN values
+        nan_mask = np.isnan(X)
+        has_nan = nan_mask.any()
+        
+        if has_nan:
+            nan_count = nan_mask.sum()
+            print(f"  Note: {nan_count} NaN values detected (structural missing values)")
+            print(f"  Using sentinel value approach for SMOTE compatibility...")
+            
+            # Use a sentinel value that is far outside the normal data range
+            # After scaling, most values are in [-3, 3] range, so -999 is clearly distinct
+            SENTINEL_VALUE = -999.0
+            
+            # Replace NaN with sentinel for SMOTE
+            X_for_smote = np.where(nan_mask, SENTINEL_VALUE, X)
+        else:
+            X_for_smote = X
+        
+        # Apply SMOTE
         if method == 'smote':
             smote = SMOTE(random_state=self.random_state, k_neighbors=5)
-            X_resampled, y_resampled = smote.fit_resample(X, y)
+            X_resampled, y_resampled = smote.fit_resample(X_for_smote, y)
         elif method == 'smotetomek':
             smote_tomek = SMOTETomek(random_state=self.random_state)
-            X_resampled, y_resampled = smote_tomek.fit_resample(X, y)
+            X_resampled, y_resampled = smote_tomek.fit_resample(X_for_smote, y)
         else:
             raise ValueError(f"Unknown SMOTE method: {method}")
+        
+        # Restore NaN values if they were present
+        if has_nan:
+            # For original samples, restore exact NaN positions
+            # For synthetic samples, identify sentinel values and convert back to NaN
+            # Sentinel values in synthetic samples indicate the feature was NaN in neighbors
+            X_resampled = np.where(
+                np.isclose(X_resampled, SENTINEL_VALUE, atol=1.0),  # Allow some tolerance
+                np.nan,
+                X_resampled
+            )
+            restored_nan_count = np.isnan(X_resampled).sum()
+            print(f"  Restored {restored_nan_count} NaN values after SMOTE")
         
         print(f"  Resampled class distribution: {np.bincount(y_resampled.astype(int))}")
         

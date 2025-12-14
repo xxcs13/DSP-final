@@ -20,7 +20,7 @@ warnings.filterwarnings('ignore')
 
 
 class DataPreprocessor:
-    def __init__(self, random_state=55, remove_features=[], encoding_method='target'):
+    def __init__(self, random_state=55, remove_features=[], encoding_method='label'):
         """
         Initialize the data preprocessor
         
@@ -32,12 +32,17 @@ class DataPreprocessor:
                            - [] to keep all features (no removal)
                            - None (default) to use default removal ['Name', 'City', 'Degree']
             encoding_method: Method for encoding high-cardinality categorical features (Profession)
-                           - 'target': Target encoding (default) - uses target mean for each category
-                           - 'label': Label encoding - simple integer encoding
+                           - 'label': Label encoding (default) - simple integer encoding
+                           - 'target': Target encoding - uses target mean for each category
+                           
+                           Note: Both methods were evaluated. Label encoding is the default
+                           as it provides comparable performance with simpler implementation.
+                           Target encoding with Bayesian smoothing was also implemented and
+                           tested but did not show significant improvement in this dataset.
         """
         self.random_state = random_state
         self.remove_features = remove_features if remove_features is not None else ['Name', 'City', 'Degree']
-        self.encoding_method = encoding_method  # 'target' or 'label'
+        self.encoding_method = encoding_method  # 'label' or 'target'
         self.label_encoders = {}
         self.target_encoders = {}  # Store target encoding mappings
         self.scaler = None
@@ -317,10 +322,20 @@ class DataPreprocessor:
         """
         Intelligently handle missing values based on context (IMPROVED STRATEGY)
         
-        Key improvements:
-        1. Use MEDIAN (not mean) for numerical features (more robust to skewness)
-        2. Profession handling: Students -> 'Student', Professionals -> 'Unknown'
-        3. More conservative imputation strategy
+        Key principles:
+        1. STRUCTURAL MISSING VALUES: Features that are inherently not applicable to
+           certain populations should remain as NaN (or be encoded as a special value)
+           to let tree-based models learn the distinction naturally.
+           - Students do NOT have: Work Pressure, Job Satisfaction, Profession
+           - Professionals do NOT have: CGPA, Academic Pressure, Study Satisfaction
+           These are kept as NaN because filling them with arbitrary values (like 0)
+           would be semantically incorrect and could mislead the model.
+        
+        2. ANOMALOUS MISSING VALUES: Missing values that SHOULD exist but are absent
+           (e.g., a student without CGPA, a professional without Profession) are
+           imputed with MEDIAN (numerical) or MODE (categorical) from training data.
+        
+        3. Use MEDIAN (not mean) for numerical features (more robust to skewness)
         
         CRITICAL: If is_training=True, compute statistics and store in self.imputation_values
                   If is_training=False, use provided imputation_values or self.imputation_values
@@ -346,25 +361,37 @@ class DataPreprocessor:
             print("  Computing imputation statistics from training data...")
             self.imputation_values = {}
             
-            # For Students: Work-related features should be 0 (not applicable)
-            student_work_features = ['Work Pressure', 'Job Satisfaction']
-            for feature in student_work_features:
-                if feature in df.columns:
-                    self.imputation_values[f'{feature}_student'] = 0.0
-            
-            # For Professionals: Academic features should be 0 (not applicable)
-            prof_academic_features = ['Academic Pressure', 'Study Satisfaction', 'CGPA']
-            for feature in prof_academic_features:
-                if feature in df.columns:
-                    self.imputation_values[f'{feature}_professional'] = 0.0
-            
-            # For Students with missing CGPA: use MEDIAN from training students
+            # For Students with missing CGPA (anomalous): use MEDIAN from training students
             if 'CGPA' in df.columns:
                 student_cgpa_median = df.loc[is_student, 'CGPA'].median()
                 self.imputation_values['CGPA_student'] = student_cgpa_median
-                print(f"    Student CGPA median: {student_cgpa_median:.2f}")
+                print(f"    Student CGPA median (for anomalous missing): {student_cgpa_median:.2f}")
             
-            # Numerical features: compute MEDIAN from training data (robust to outliers)
+            # For Students with missing Academic Pressure (anomalous): use MEDIAN
+            if 'Academic Pressure' in df.columns:
+                student_ap_median = df.loc[is_student, 'Academic Pressure'].median()
+                self.imputation_values['Academic Pressure_student'] = student_ap_median
+                print(f"    Student Academic Pressure median (for anomalous missing): {student_ap_median:.2f}")
+            
+            # For Students with missing Study Satisfaction (anomalous): use MEDIAN
+            if 'Study Satisfaction' in df.columns:
+                student_ss_median = df.loc[is_student, 'Study Satisfaction'].median()
+                self.imputation_values['Study Satisfaction_student'] = student_ss_median
+                print(f"    Student Study Satisfaction median (for anomalous missing): {student_ss_median:.2f}")
+            
+            # For Professionals with missing Work Pressure (anomalous): use MEDIAN
+            if 'Work Pressure' in df.columns:
+                prof_wp_median = df.loc[is_professional, 'Work Pressure'].median()
+                self.imputation_values['Work Pressure_professional'] = prof_wp_median
+                print(f"    Professional Work Pressure median (for anomalous missing): {prof_wp_median:.2f}")
+            
+            # For Professionals with missing Job Satisfaction (anomalous): use MEDIAN
+            if 'Job Satisfaction' in df.columns:
+                prof_js_median = df.loc[is_professional, 'Job Satisfaction'].median()
+                self.imputation_values['Job Satisfaction_professional'] = prof_js_median
+                print(f"    Professional Job Satisfaction median (for anomalous missing): {prof_js_median:.2f}")
+            
+            # Universal numerical features: compute MEDIAN from all training data
             numerical_cols = df.select_dtypes(include=['int64', 'float64']).columns
             for col in numerical_cols:
                 if col not in ['id', 'Depression']:
@@ -381,7 +408,7 @@ class DataPreprocessor:
                     else:
                         self.imputation_values[f'{col}_mode'] = 'Unknown'
             
-            # Profession: compute mode for professionals only
+            # Profession: compute mode for professionals only (for anomalous missing)
             if 'Profession' in df.columns:
                 prof_mode = df.loc[is_professional, 'Profession'].mode()
                 if len(prof_mode) > 0:
@@ -401,54 +428,98 @@ class DataPreprocessor:
         # Apply imputation using the computed (or provided) statistics
         print("  Applying imputation...")
         
-        # For Students: Fill work-related features with 0
+        # ============================================================
+        # STRUCTURAL MISSING VALUES: Keep as NaN (let model learn)
+        # ============================================================
+        # Students should NOT have work-related features - these remain NaN
+        # Tree-based models (XGBoost, LightGBM, CatBoost) handle NaN natively
         student_work_features = ['Work Pressure', 'Job Satisfaction']
         for feature in student_work_features:
             if feature in df.columns:
-                df.loc[is_student, feature] = df.loc[is_student, feature].fillna(
-                    imputation_values.get(f'{feature}_student', 0.0)
-                )
+                structural_missing = is_student & df[feature].isnull()
+                if structural_missing.sum() > 0:
+                    print(f"    {feature}: {structural_missing.sum()} structural NaN for Students (kept as NaN)")
         
-        # For Students: Fill missing Profession with 'Student'
-        if 'Profession' in df.columns:
-            student_prof_missing = is_student & df['Profession'].isnull()
-            if student_prof_missing.sum() > 0:
-                print(f"    Filling {student_prof_missing.sum()} missing Profession for Students -> 'Student'")
-                df.loc[student_prof_missing, 'Profession'] = 'Student'
-        
-        # For Professionals: Fill academic-related features with 0
+        # Professionals should NOT have academic features - these remain NaN
         prof_academic_features = ['Academic Pressure', 'Study Satisfaction', 'CGPA']
         for feature in prof_academic_features:
             if feature in df.columns:
-                df.loc[is_professional, feature] = df.loc[is_professional, feature].fillna(
-                    imputation_values.get(f'{feature}_professional', 0.0)
-                )
+                structural_missing = is_professional & df[feature].isnull()
+                if structural_missing.sum() > 0:
+                    print(f"    {feature}: {structural_missing.sum()} structural NaN for Professionals (kept as NaN)")
         
-        # For Professionals: Fill missing Profession with mode or 'Unknown'
+        # Students should NOT have Profession (or should be 'Student') - keep as NaN or fill 'Student'
+        if 'Profession' in df.columns:
+            student_prof_missing = is_student & df['Profession'].isnull()
+            if student_prof_missing.sum() > 0:
+                print(f"    Profession: {student_prof_missing.sum()} structural NaN for Students -> 'Student'")
+                df.loc[student_prof_missing, 'Profession'] = 'Student'
+        
+        # ============================================================
+        # ANOMALOUS MISSING VALUES: Impute with median/mode
+        # ============================================================
+        # Students with missing CGPA (should have it but don't)
+        if 'CGPA' in df.columns:
+            student_cgpa_fill = imputation_values.get('CGPA_student', imputation_values.get('CGPA_median', 0.0))
+            anomalous_cgpa = is_student & df['CGPA'].isnull()
+            if anomalous_cgpa.sum() > 0:
+                print(f"    CGPA: {anomalous_cgpa.sum()} anomalous missing for Students -> median: {student_cgpa_fill:.2f}")
+                df.loc[anomalous_cgpa, 'CGPA'] = student_cgpa_fill
+        
+        # Students with missing Academic Pressure (should have it but don't)
+        if 'Academic Pressure' in df.columns:
+            student_ap_fill = imputation_values.get('Academic Pressure_student', imputation_values.get('Academic Pressure_median', 0.0))
+            anomalous_ap = is_student & df['Academic Pressure'].isnull()
+            if anomalous_ap.sum() > 0:
+                print(f"    Academic Pressure: {anomalous_ap.sum()} anomalous missing for Students -> median: {student_ap_fill:.2f}")
+                df.loc[anomalous_ap, 'Academic Pressure'] = student_ap_fill
+        
+        # Students with missing Study Satisfaction (should have it but don't)
+        if 'Study Satisfaction' in df.columns:
+            student_ss_fill = imputation_values.get('Study Satisfaction_student', imputation_values.get('Study Satisfaction_median', 0.0))
+            anomalous_ss = is_student & df['Study Satisfaction'].isnull()
+            if anomalous_ss.sum() > 0:
+                print(f"    Study Satisfaction: {anomalous_ss.sum()} anomalous missing for Students -> median: {student_ss_fill:.2f}")
+                df.loc[anomalous_ss, 'Study Satisfaction'] = student_ss_fill
+        
+        # Professionals with missing Work Pressure (should have it but don't)
+        if 'Work Pressure' in df.columns:
+            prof_wp_fill = imputation_values.get('Work Pressure_professional', imputation_values.get('Work Pressure_median', 0.0))
+            anomalous_wp = is_professional & df['Work Pressure'].isnull()
+            if anomalous_wp.sum() > 0:
+                print(f"    Work Pressure: {anomalous_wp.sum()} anomalous missing for Professionals -> median: {prof_wp_fill:.2f}")
+                df.loc[anomalous_wp, 'Work Pressure'] = prof_wp_fill
+        
+        # Professionals with missing Job Satisfaction (should have it but don't)
+        if 'Job Satisfaction' in df.columns:
+            prof_js_fill = imputation_values.get('Job Satisfaction_professional', imputation_values.get('Job Satisfaction_median', 0.0))
+            anomalous_js = is_professional & df['Job Satisfaction'].isnull()
+            if anomalous_js.sum() > 0:
+                print(f"    Job Satisfaction: {anomalous_js.sum()} anomalous missing for Professionals -> median: {prof_js_fill:.2f}")
+                df.loc[anomalous_js, 'Job Satisfaction'] = prof_js_fill
+        
+        # Professionals with missing Profession (should have it but don't)
         if 'Profession' in df.columns:
             prof_prof_missing = is_professional & df['Profession'].isnull()
             if prof_prof_missing.sum() > 0:
                 fill_value = imputation_values.get('Profession_professional_mode', 'Unknown')
-                print(f"    Filling {prof_prof_missing.sum()} missing Profession for Professionals -> '{fill_value}'")
+                print(f"    Profession: {prof_prof_missing.sum()} anomalous missing for Professionals -> mode: '{fill_value}'")
                 df.loc[prof_prof_missing, 'Profession'] = fill_value
         
-        # Handle anomalous missing values in CGPA for students (use training median)
-        if 'CGPA' in df.columns:
-            student_cgpa_fill = imputation_values.get('CGPA_student', 0.0)
-            student_cgpa_missing = is_student & df['CGPA'].isnull()
-            if student_cgpa_missing.sum() > 0:
-                print(f"    Filling {student_cgpa_missing.sum()} missing CGPA for Students -> {student_cgpa_fill:.2f}")
-                df.loc[student_cgpa_missing, 'CGPA'] = student_cgpa_fill
-        
-        # Fill remaining missing values using training statistics
+        # ============================================================
+        # UNIVERSAL FEATURES: Fill remaining missing values
+        # ============================================================
         # Numerical features: use training MEDIAN (robust to outliers)
         numerical_cols = df.select_dtypes(include=['int64', 'float64']).columns
         for col in numerical_cols:
             if col not in ['id', 'Depression']:
+                # Skip structural missing values (already handled or intentionally kept)
+                if col in student_work_features or col in prof_academic_features:
+                    continue
                 fill_value = imputation_values.get(f'{col}_median', 0.0)
                 missing_count = df[col].isnull().sum()
                 if missing_count > 0:
-                    print(f"    Filling {missing_count} missing {col} -> median: {fill_value:.2f}")
+                    print(f"    {col}: {missing_count} remaining missing -> median: {fill_value:.2f}")
                     df[col] = df[col].fillna(fill_value)
         
         # Categorical features: use training mode
@@ -458,10 +529,11 @@ class DataPreprocessor:
                 fill_value = imputation_values.get(f'{col}_mode', 'Unknown')
                 missing_count = df[col].isnull().sum()
                 if missing_count > 0:
-                    print(f"    Filling {missing_count} missing {col} -> mode: '{fill_value}'")
+                    print(f"    {col}: {missing_count} remaining missing -> mode: '{fill_value}'")
                     df[col] = df[col].fillna(fill_value)
         
         print("  Imputation completed")
+        print("  Note: Structural NaN values preserved for tree-based models to learn naturally")
         return df
     
     def handle_outliers(self, df, is_training=True, clip_values=None):
@@ -540,14 +612,30 @@ class DataPreprocessor:
         """
         Encode categorical features to numerical
         
-        CONFIGURABLE STRATEGY:
-        - Ordinal encoding for Sleep Duration and Dietary Habits (meaningful order)
-        - Target encoding OR Label encoding for Profession (configurable via self.encoding_method)
-        - Label encoding for Gender and Working Professional or Student (low cardinality)
+        ENCODING STRATEGY:
+        Multiple encoding methods were evaluated for this dataset:
         
-        The encoding method for Profession can be configured:
-        - 'target': Target encoding - uses target mean for each category (default)
-        - 'label': Label encoding - simple integer encoding
+        1. ORDINAL ENCODING: For features with meaningful order
+           - Sleep Duration: Encoded 1-5 based on sleep quality (optimal=5)
+           - Dietary Habits: Encoded 0-3 based on health risk (healthy=0, unhealthy=3)
+        
+        2. LABEL ENCODING (default for Profession):
+           - Simple integer encoding for high-cardinality categorical features
+           - Pros: Simple, no data leakage risk, works well with tree-based models
+           - Used for: Profession, Gender, Working Professional or Student
+        
+        3. TARGET ENCODING (alternative, evaluated but not default):
+           - Encodes categories with target mean using Bayesian smoothing
+           - Pros: Captures target relationship, handles rare categories
+           - Cons: More complex, potential overfitting on rare categories
+           - Evaluation result: Did not show significant improvement over label encoding
+        
+        4. ONE-HOT ENCODING:
+           - Creates binary columns for each category
+           - Not used for Profession due to high cardinality (64 categories)
+           - Would create sparse, high-dimensional feature space
+        
+        The default encoding_method='label' was selected based on empirical evaluation.
         
         Args:
             df: Input dataframe
@@ -824,11 +912,9 @@ class DataPreprocessor:
             Dictionary containing preprocessed train/val sets (BEFORE scaling and SMOTE)
         """
         print("=" * 80)
-        print("STARTING TRAINING DATA PREPROCESSING (DATA LEAKAGE FIXED)")
+        print("STARTING TRAINING DATA PREPROCESSING")
         print("=" * 80)
         print(f"Original shape: {df.shape}")
-        print("\n⚠️  NOTE: Scaling and SMOTE will be applied AFTER feature engineering")
-        print("    This is the correct order for proper feature construction.\n")
         
         # Store SMOTE and scaling settings for later use in feature engineering pipeline
         self.use_smote = use_smote
@@ -937,8 +1023,6 @@ class DataPreprocessor:
                                                imputation_values=self.imputation_values)
         print(f"  Validation missing values after imputation: {X_val_df.isnull().sum().sum()}")
         
-        # NOTE: Scaling and SMOTE are NOT done here anymore
-        # They will be applied AFTER feature engineering in the engineer_pipeline
         
         print("\n" + "=" * 80)
         print("PREPROCESSING COMPLETE (Phase 1 - Before Feature Engineering)")
@@ -954,7 +1038,7 @@ class DataPreprocessor:
         print("  ✓ Target encoding fitted on training set only")
         print("  ✓ Outlier clipping bounds fitted on training set only")
         print("  ✓ Imputation statistics computed on training set only")
-        print("\n⚠️  Scaling and SMOTE will be applied AFTER feature engineering")
+  
         print("=" * 80)
         
         return {
@@ -988,10 +1072,10 @@ class DataPreprocessor:
             Preprocessed feature matrix (BEFORE scaling) and ids
         """
         print("=" * 80)
-        print("STARTING TEST DATA PREPROCESSING (CORRECTED FLOW)")
+        print("STARTING TEST DATA PREPROCESSING")
         print("=" * 80)
         print(f"Original shape: {df.shape}")
-        print("\n⚠️  NOTE: Scaling will be applied AFTER feature engineering")
+  
         
         # Save ids for submission
         test_ids = df['id'].values
@@ -1055,7 +1139,6 @@ class DataPreprocessor:
         print("  ✓ Using training set category encoders")
         print("  ✓ Using training set outlier clipping bounds")
         print("  ✓ Using training set imputation statistics")
-        print("\n⚠️  Scaling will be applied AFTER feature engineering")
         print("=" * 80)
         
         return X_df.values, test_ids

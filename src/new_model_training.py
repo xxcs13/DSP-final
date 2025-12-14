@@ -278,9 +278,103 @@ class ModelTrainer:
         
         return LogisticRegression(**default_params)
         
+    def _handle_nan_for_model(self, X, model, model_name=None, fit=True):
+        """
+        Handle NaN values based on model type
+        
+        Tree-based models (XGBoost, LightGBM, CatBoost) handle NaN natively.
+        Other models (LogisticRegression, RandomForest) need NaN to be imputed.
+        
+        Args:
+            X: Feature matrix (may contain NaN)
+            model: Model instance to check type
+            model_name: Name of the model (for storing imputation values)
+            fit: If True, compute and store imputation values; if False, use stored values
+            
+        Returns:
+            X with NaN handled appropriately for the model type
+        """
+        # Check if model supports NaN natively
+        nan_native_models = (XGBClassifier, LGBMClassifier, CatBoostClassifier)
+        
+        if isinstance(model, nan_native_models):
+            # Tree-based models handle NaN natively - return as-is
+            return X
+        
+        # For other models, impute NaN with column median
+        X_copy = np.array(X, dtype=np.float64)  # Ensure we have a writable copy
+        
+        # Initialize storage for imputation values if needed
+        if not hasattr(self, '_nan_impute_values_per_model'):
+            self._nan_impute_values_per_model = {}
+        
+        if fit:
+            # Compute and store column medians for imputation
+            impute_values = np.nanmedian(X_copy, axis=0)
+            # Handle columns where all values are NaN - use 0 as fallback
+            impute_values = np.where(np.isnan(impute_values), 0.0, impute_values)
+            if model_name:
+                self._nan_impute_values_per_model[model_name] = impute_values
+            self._current_impute_values = impute_values
+        else:
+            # Use stored values
+            if model_name and model_name in self._nan_impute_values_per_model:
+                impute_values = self._nan_impute_values_per_model[model_name]
+            elif hasattr(self, '_current_impute_values'):
+                impute_values = self._current_impute_values
+            else:
+                # Fallback: compute from current data
+                impute_values = np.nanmedian(X_copy, axis=0)
+                impute_values = np.where(np.isnan(impute_values), 0.0, impute_values)
+        
+        # Find NaN positions and impute
+        nan_mask = np.isnan(X_copy)
+        if nan_mask.any():
+            nan_count = nan_mask.sum()
+            print(f"  Note: Imputing {nan_count} NaN values for {type(model).__name__} (does not support NaN natively)")
+            
+            # Use numpy advanced indexing for efficient imputation
+            # Create a broadcast-able imputation array
+            for col_idx in range(X_copy.shape[1]):
+                col_nan_mask = nan_mask[:, col_idx]
+                if col_nan_mask.any():
+                    X_copy[col_nan_mask, col_idx] = impute_values[col_idx]
+            
+            # Verify no NaN remaining
+            remaining_nan = np.isnan(X_copy).sum()
+            if remaining_nan > 0:
+                print(f"  Warning: {remaining_nan} NaN values could not be imputed, filling with 0")
+                X_copy = np.nan_to_num(X_copy, nan=0.0)
+        
+        return X_copy
+    
+    def predict_with_model(self, model, X, model_name=None):
+        """
+        Make predictions with a trained model, handling NaN values appropriately
+        
+        Args:
+            model: Trained model instance
+            X: Feature matrix (may contain NaN)
+            model_name: Name of the model (for retrieving stored imputation values)
+            
+        Returns:
+            Predictions (y_pred, y_pred_proba)
+        """
+        # Handle NaN values for non-tree models
+        X_processed = self._handle_nan_for_model(X, model, model_name=model_name, fit=False)
+        
+        y_pred = model.predict(X_processed)
+        y_pred_proba = model.predict_proba(X_processed)[:, 1]
+        
+        return y_pred, y_pred_proba
+    
     def train_model(self, model, X_train, y_train, X_val=None, y_val=None, model_name='model'):
         """
         Train a model with early stopping support and training monitoring
+        
+        Automatically handles NaN values based on model type:
+        - Tree-based models (XGBoost, LightGBM, CatBoost): Keep NaN (native support)
+        - Other models (LogisticRegression, RandomForest): Impute NaN with median
         
         Args:
             model: Model instance
@@ -294,6 +388,11 @@ class ModelTrainer:
             Trained model
         """
         print(f"\nTraining {model_name}...")
+        
+        # Handle NaN values based on model type
+        X_train = self._handle_nan_for_model(X_train, model, model_name=model_name, fit=True)
+        if X_val is not None:
+            X_val = self._handle_nan_for_model(X_val, model, model_name=model_name, fit=False)
         
         # Initialize training history
         self.training_history[model_name] = {
@@ -969,8 +1068,7 @@ def train_all_models(X_train, y_train, X_val, y_val,
     lr_model = trainer.get_logistic_regression_model()
     trainer.train_model(lr_model, X_train, y_train, X_val, y_val, 'logistic_regression')
     
-    y_pred_lr = lr_model.predict(X_val)
-    y_pred_proba_lr = lr_model.predict_proba(X_val)[:, 1]
+    y_pred_lr, y_pred_proba_lr = trainer.predict_with_model(lr_model, X_val, 'logistic_regression')
     results['logistic_regression'] = {
         'model': lr_model,
         'y_pred': y_pred_lr,
@@ -987,8 +1085,7 @@ def train_all_models(X_train, y_train, X_val, y_val,
     rf_model = trainer.get_random_forest_model()
     trainer.train_model(rf_model, X_train, y_train, X_val, y_val, 'random_forest')
     
-    y_pred_rf = rf_model.predict(X_val)
-    y_pred_proba_rf = rf_model.predict_proba(X_val)[:, 1]
+    y_pred_rf, y_pred_proba_rf = trainer.predict_with_model(rf_model, X_val, 'random_forest')
     results['random_forest'] = {
         'model': rf_model,
         'y_pred': y_pred_rf,

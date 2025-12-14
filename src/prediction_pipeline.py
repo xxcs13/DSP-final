@@ -14,6 +14,71 @@ import warnings
 warnings.filterwarnings('ignore')
 
 
+def _handle_nan_for_prediction(X, model):
+    """
+    Handle NaN values for models that do not support NaN natively
+    
+    Tree-based models (XGBoost, LightGBM, CatBoost) handle NaN natively.
+    Other models (LogisticRegression, RandomForest) need NaN to be imputed.
+    
+    Args:
+        X: Feature matrix (may contain NaN)
+        model: Model instance to check type
+        
+    Returns:
+        X with NaN imputed if necessary
+    """
+    # Try to import tree model types
+    try:
+        from xgboost import XGBClassifier
+    except ImportError:
+        XGBClassifier = type(None)
+    try:
+        from lightgbm import LGBMClassifier
+    except ImportError:
+        LGBMClassifier = type(None)
+    try:
+        from catboost import CatBoostClassifier
+    except ImportError:
+        CatBoostClassifier = type(None)
+    
+    from sklearn.linear_model import LogisticRegression
+    from sklearn.ensemble import RandomForestClassifier
+    
+    # Check if model supports NaN natively
+    nan_native_models = (XGBClassifier, LGBMClassifier, CatBoostClassifier)
+    
+    if isinstance(model, nan_native_models):
+        # Tree-based models handle NaN natively - return as-is
+        return X
+    
+    # For other models, check if there are NaN values
+    X_arr = np.asarray(X, dtype=np.float64)
+    nan_mask = np.isnan(X_arr)
+    
+    if not nan_mask.any():
+        return X
+    
+    # Impute NaN with column median
+    X_copy = X_arr.copy()
+    impute_values = np.nanmedian(X_copy, axis=0)
+    # Handle columns where all values are NaN - use 0 as fallback
+    impute_values = np.where(np.isnan(impute_values), 0.0, impute_values)
+    
+    nan_count = nan_mask.sum()
+    print(f"  Note: Imputing {nan_count} NaN values for prediction")
+    
+    for col_idx in range(X_copy.shape[1]):
+        col_nan_mask = nan_mask[:, col_idx]
+        if col_nan_mask.any():
+            X_copy[col_nan_mask, col_idx] = impute_values[col_idx]
+    
+    # Final fallback for any remaining NaN
+    X_copy = np.nan_to_num(X_copy, nan=0.0)
+    
+    return X_copy
+
+
 class PredictionPipeline:
     def __init__(self, model_path, test_data_path, test_ids_path, threshold=0.5):
         """
@@ -52,11 +117,19 @@ class PredictionPipeline:
         """
         Make predictions on test set using specified threshold
         
+        Handles NaN values appropriately based on model type:
+        - Tree-based models (XGBoost, LightGBM, CatBoost): Keep NaN (native support)
+        - Other models (LogisticRegression, RandomForest): Impute NaN with median
+        
         Returns:
             Predicted labels and probabilities
         """
         print(f"\nMaking predictions with threshold={self.threshold:.3f}...")
-        y_pred_proba = self.model.predict_proba(self.X_test)[:, 1]
+        
+        # Handle NaN values for models that don't support them natively
+        X_test_processed = _handle_nan_for_prediction(self.X_test, self.model)
+        
+        y_pred_proba = self.model.predict_proba(X_test_processed)[:, 1]
         y_pred = (y_pred_proba >= self.threshold).astype(int)
         
         print(f"Predictions generated for {len(y_pred)} samples")
