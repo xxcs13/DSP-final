@@ -140,21 +140,21 @@ The combination of SMOTE resampling and tree-based model selection creates a syn
 
 The complete data preparation pipeline proceeds in the following order, designed to prevent data leakage while maximizing model performance:
 
-1. **Data Cleaning**: Remove severely corrupted records and standardize categorical values (applied to complete dataset using deterministic rules)
-2. **Train-Validation Split**: Partition the cleaned data with stratification (80% training, 20% validation)
-3. **Missing Value Imputation**: Compute imputation statistics (median, mode) from training partition only; apply to both partitions
-4. **Feature Encoding**: Learn encoding mappings from training partition; apply to both partitions
-5. **Feature Engineering**: Construct derived features; any required statistics computed from training partition only
-6. **Feature Scaling**: Fit RobustScaler on training partition; transform both partitions using learned parameters
-7. **SMOTE Resampling**: Apply exclusively to training partition to balance class distribution
+1. **Data Cleaning**: Remove severely corrupted records (50%+ missing) and standardize categorical values (applied to complete dataset using deterministic rules).
+2. **Train-Validation Split**: Partition the cleaned data with stratification (80% training, 20% validation) to preserve class distribution and establish strict data separation.
+3. **Missing Value Imputation**: Structural missing values are preserved as NaN (for native handling by tree models); anomalous missing values receive median/mode imputation statistics computed exclusively from the training partition. 
+4. **Feature Encoding**: Learn encoding mappings from training partition; apply to both partitions.
+5. **Feature Engineering**: Construct derived features; any required statistics computed from training partition only.
+6. **Feature Scaling**: Fit RobustScaler on training partition to use median/IQR statistics; transform both partitions using learned parameters. 
+7. **SMOTE Resampling**: Apply exclusively to training partition to balance class distribution, ensuring the validation set remains untouched by synthetic samples.
 
 This ordering enforces the fundamental principle that all learned transformation parameters are derived solely from the training partition, preserving the independence of the validation set. The validation set undergoes the same transformations as the training set (imputation, encoding, feature engineering, scaling) but uses parameters learned from training data, ensuring that evaluation metrics reflect true generalization performance. SMOTE is deliberately restricted to the training partition, as synthetic sample generation must not influence the held-out data used for model selection and performance estimation.
 
 ### 2.3 Data Modeling
 
-#### 2.3.1 Feature Engineering Validation
+#### 2.3.1 Feature Engineering Validation - Iterative Refinement (Addressing Challenge 2) 
 
-The effectiveness of the iterative feature engineering approach described in Section 2.2.5 is validated by SHAP analysis on the final model, which reveals that six of the top 15 most important features are engineered features (Total_Stress_Index, Work_Life_Balance, Overall_Satisfaction, Stress_Saturated, Hours_Saturated, Youth_Risk). This demonstrates that the iterative refinement process successfully identifies and constructs features that extract meaningful predictive signals from the original noisy feature space. The prominence of engineered features in the importance rankings confirms that the iterative SHAP-guided approach effectively separates true predictive factors from noise, directly fulfilling the second research aim of quantifying factor contributions to depression risk.
+The effectiveness of the iterative feature engineering approach described in Section 2.2.5 is validated by SHAP analysis on the final model, which reveals that six of the top 15 most important features are engineered features (e.g., Total_Stress_Index, Work_Life_Balance, Overall_Satisfaction, Stress_Saturated, Hours_Saturated, Youth_Risk). This demonstrates that the iterative refinement process successfully identifies and constructs features that extract meaningful predictive signals from the original noisy feature space. The prominence of engineered features in the importance rankings confirms that the iterative SHAP-guided approach effectively separates true predictive factors from noise, directly fulfilling the second research aim of quantifying factor contributions to depression risk.
 
 #### 2.3.2 Model Selection (Addressing Challenge 1)
 
