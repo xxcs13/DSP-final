@@ -234,7 +234,7 @@ class DataPreprocessor:
         # Calculate missing value percentage per row
         missing_pct = df.isnull().sum(axis=1) / len(df.columns)
         
-        # Only remove rows with >= 50% missing values (VERY conservative)
+        # Only remove rows with >= 50% missing values 
         anomalous_mask = missing_pct >= 0.5
         
         # Remove anomalous rows
